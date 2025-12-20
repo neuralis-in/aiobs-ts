@@ -1,0 +1,13 @@
+{
+  "name": "aiobs-gemini-example",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.9.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}

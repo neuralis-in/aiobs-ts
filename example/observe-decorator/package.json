@@ -1,0 +1,11 @@
+{
+  "name": "aiobs-observe-decorator-example",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}
+
