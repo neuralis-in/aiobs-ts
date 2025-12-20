@@ -1,0 +1,14 @@
+{
+  "name": "aiobs-simple-chat-example",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}
+
