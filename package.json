@@ -18,20 +18,31 @@
     "observability",
     "tracing",
     "openai",
+    "opentelemetry",
     "monitoring"
   ],
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^1.30.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0"
+  },
   "peerDependencies": {
+    "@opentelemetry/instrumentation-openai": "^0.7.0",
     "openai": "^4.0.0"
   },
   "peerDependenciesMeta": {
+    "@opentelemetry/instrumentation-openai": {
+      "optional": true
+    },
     "openai": {
       "optional": true
     }
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@opentelemetry/instrumentation-openai": "^0.7.0",
     "@types/node": "^20.10.0",
     "eslint": "^9.0.0",
     "openai": "^4.0.0",

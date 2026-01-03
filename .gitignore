@@ -34,3 +34,6 @@ coverage/
 
 # symlinks
 aiobs
+
+# virtual environments
+venv/

@@ -395,6 +395,7 @@ function createWrappedGenerateContentWithModel(
         duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
         span_id: spanId,
         parent_span_id: parentSpanId,
+        trace_id: null,
       };
       
       collector.recordEvent(event);
@@ -540,6 +541,7 @@ function createWrappedSendMessageWithModel(
         duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
         span_id: spanId,
         parent_span_id: parentSpanId,
+        trace_id: null,
       };
       
       collector.recordEvent(event);
@@ -594,6 +596,7 @@ function createWrappedSendMessageStreamWithModel(
         duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
         span_id: spanId,
         parent_span_id: parentSpanId,
+        trace_id: null,
       };
       
       collector.recordEvent(event);
@@ -645,6 +648,7 @@ function createWrappedGenerateContentStreamWithModel(
         duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
         span_id: spanId,
         parent_span_id: parentSpanId,
+        trace_id: null,
       };
       
       collector.recordEvent(event);

@@ -253,17 +253,8 @@ describe('Collector', () => {
   });
 
   describe('Span context', () => {
-    it('should manage span IDs', () => {
-      expect(collector.getCurrentSpanId()).toBeNull();
-
-      const previous = collector.setCurrentSpanId('span-1');
-      expect(previous).toBeNull();
-      expect(collector.getCurrentSpanId()).toBe('span-1');
-
-      collector.setCurrentSpanId('span-2');
-      expect(collector.getCurrentSpanId()).toBe('span-2');
-
-      collector.setCurrentSpanId(null);
+    it('should return null when no active span', () => {
+      // With OTel-based context, getCurrentSpanId returns null when no span is active
       expect(collector.getCurrentSpanId()).toBeNull();
     });
   });
@@ -345,7 +336,6 @@ describe('Collector', () => {
       });
       await collector.observe({ apiKey: 'aiobs_sk_valid' });
 
-      collector.setCurrentSpanId('span-1');
       collector.reset();
 
       expect(collector.getCurrentSpanId()).toBeNull();

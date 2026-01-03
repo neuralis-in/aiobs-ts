@@ -1,11 +1,15 @@
 /**
  * Collector for managing observability sessions and events.
+ *
+ * This collector uses OpenTelemetry underneath for trace context propagation
+ * and provider instrumentation, while maintaining the same output format.
  */
 
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { context, trace, SpanStatusCode } from '@opentelemetry/api';
 import type {
   Session,
   SessionMeta,
@@ -16,6 +20,13 @@ import type {
   ObservabilityExport,
   TraceNode,
 } from './models/observability.js';
+import {
+  initTracer,
+  getFinishedSpans,
+  clearSpans,
+  resetTracer,
+  type ReadableSpan,
+} from './tracer.js';
 
 // SDK version for system labels
 const SDK_VERSION = '0.1.0';
@@ -32,9 +43,6 @@ const LABEL_VALUE_MAX_LENGTH = 256;
 const LABEL_MAX_COUNT = 64;
 const LABEL_RESERVED_PREFIX = 'aiobs_';
 const LABEL_ENV_PREFIX = 'AIOBS_LABEL_';
-
-// Context for tracking current span (for nested tracing)
-let currentSpanId: string | null = null;
 
 /**
  * Simple logger for debug output.
@@ -264,15 +272,23 @@ export interface UsageInfo {
   is_rate_limited: boolean;
 }
 
+// Type for OTel instrumentor
+interface OtelInstrumentor {
+  enable(): void;
+  disable(): void;
+}
+
 export class Collector {
   private sessions = new Map<string, Session>();
   private events = new Map<string, Array<Event | FunctionEvent>>();
   private activeSession: string | null = null;
   private apiKey: string | null = null;
+  private instrumented = false;
+  private instrumentors: OtelInstrumentor[] = [];
 
   /**
    * Enable instrumentation and start a new session.
-   * 
+   *
    * @throws Error if no API key is provided or API key is invalid
    */
   async observe(options: ObserveOptions = {}): Promise<string> {
@@ -289,6 +305,12 @@ export class Collector {
 
     // Validate API key with shepherd server
     await this.validateApiKey();
+
+    // Install instrumentation if not already done
+    if (!this.instrumented) {
+      this.instrumented = true;
+      this.installInstrumentation();
+    }
 
     // Build merged labels: system < env vars < explicit
     const mergedLabels: Record<string, string> = {
@@ -346,20 +368,23 @@ export class Collector {
 
   /**
    * Flush all sessions and events to a file, custom exporter, and/or remote server.
-   * 
+   *
    * @param options - Flush options including optional exporter
    * @returns If exporter is provided: ExportResult from the exporter.
    *          If persist is True: The output file path used.
    *          If persist is False and no exporter: null.
    */
   async flush(options: FlushOptions = {}): Promise<string | ExportResult | null> {
-    const { 
-      path: outPath, 
-      includeTraceTree = true, 
+    const {
+      path: outPath,
+      includeTraceTree = true,
       persist = true,
       exporter,
       exporterOptions,
     } = options;
+
+    // Collect OTel spans and convert to events
+    this.collectOtelSpans();
 
     // Separate standard events from function events
     const standardEvents: ObservedEvent[] = [];
@@ -389,7 +414,8 @@ export class Collector {
     const traceTree = includeTraceTree ? buildTraceTree(allEvents) : null;
 
     // Extract enh_prompt traces
-    const enhPromptTraces = includeTraceTree && traceTree ? extractEnhPromptTraces(traceTree) : null;
+    const enhPromptTraces =
+      includeTraceTree && traceTree ? extractEnhPromptTraces(traceTree) : null;
 
     // Build export payload
     const exportData: ObservabilityExport = {
@@ -405,7 +431,7 @@ export class Collector {
     // Use custom exporter if provided
     if (exporter) {
       const result = await exporter.export(exportData, exporterOptions);
-      
+
       // Flush traces to remote server
       if (this.apiKey) {
         await this.flushToServer(exportData);
@@ -576,30 +602,280 @@ export class Collector {
   }
 
   /**
-   * Get the current span ID from context (for parent-child linking).
+   * Get the current span ID from OTel context (for parent-child linking).
    */
   getCurrentSpanId(): string | null {
-    return currentSpanId;
+    try {
+      const span = trace.getSpan(context.active());
+      if (span) {
+        const ctx = span.spanContext();
+        if (ctx && ctx.spanId) {
+          return ctx.spanId;
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+    return null;
   }
 
   /**
-   * Set the current span ID in context.
-   */
-  setCurrentSpanId(spanId: string | null): string | null {
-    const previous = currentSpanId;
-    currentSpanId = spanId;
-    return previous;
-  }
-
-  /**
-   * Reset collector state (for tests/dev).
+   * Reset collector state and unpatch providers (for tests/dev).
    */
   reset(): void {
     this.activeSession = null;
     this.sessions.clear();
     this.events.clear();
     this.apiKey = null;
-    currentSpanId = null;
+
+    // Disable instrumentors
+    for (const instrumentor of this.instrumentors) {
+      try {
+        instrumentor.disable();
+      } catch {
+        // Ignore errors
+      }
+    }
+    this.instrumentors = [];
+    this.instrumented = false;
+
+    // Reset OTel tracer
+    resetTracer();
+  }
+
+  /**
+   * Install OpenTelemetry tracer and provider instrumentors.
+   */
+  private installInstrumentation(): void {
+    // Initialize OTel tracer
+    initTracer();
+
+    // Install OpenAI instrumentor (if available)
+    try {
+      // Dynamic import to avoid requiring the package if not installed
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { OpenAIInstrumentation } = require('@opentelemetry/instrumentation-openai');
+      const instrumentor = new OpenAIInstrumentation();
+      instrumentor.enable();
+      this.instrumentors.push(instrumentor);
+      logger.debug('OpenAI OTel instrumentation installed');
+    } catch {
+      logger.debug('OpenAI OTel instrumentation not available');
+    }
+  }
+
+  /**
+   * Collect finished OTel spans and convert them to aiobs events.
+   *
+   * Note: Spans from the aiobs tracer (created by @observe decorator) are
+   * filtered out to avoid duplicates, since those are already recorded
+   * directly as FunctionEvents.
+   */
+  private collectOtelSpans(): void {
+    // Get the session to add events to (prefer active, fall back to first available)
+    let sessionId: string | null = this.activeSession;
+    if (!sessionId && this.sessions.size > 0) {
+      sessionId = this.sessions.keys().next().value ?? null;
+    }
+
+    if (!sessionId) {
+      // No sessions at all, clear spans and return
+      clearSpans();
+      return;
+    }
+
+    // Ensure events list exists for this session
+    if (!this.events.has(sessionId)) {
+      this.events.set(sessionId, []);
+    }
+
+    const spans = getFinishedSpans();
+    for (const span of spans) {
+      // Skip spans from aiobs tracer (these are @observe decorated functions,
+      // which are already recorded as FunctionEvents)
+      if (span.instrumentationLibrary?.name === 'aiobs') {
+        continue;
+      }
+
+      const event = this.convertOtelSpanToEvent(span);
+      if (event) {
+        this.events.get(sessionId)!.push(event);
+      }
+    }
+
+    // Clear spans after collecting
+    clearSpans();
+  }
+
+  /**
+   * Convert an OTel span to aiobs Event model.
+   *
+   * Extracts data from OTel GenAI semantic conventions to match our output format.
+   */
+  private convertOtelSpanToEvent(span: ReadableSpan): Event | null {
+    try {
+      const attrs = span.attributes ?? {};
+      const spanName = span.name;
+
+      // Determine provider from attributes (GenAI semantic conventions)
+      let provider = String(attrs['gen_ai.system'] ?? '');
+
+      // Normalize provider names
+      if (['vertex_ai', 'google_genai', 'google'].includes(provider)) {
+        provider = 'gemini';
+      } else if (!provider) {
+        // Try to infer from span name or other attributes
+        const serverAddress = String(attrs['server.address'] ?? '');
+        if (spanName.toLowerCase().includes('openai') || serverAddress.endsWith('openai.com')) {
+          provider = 'openai';
+        } else if (
+          spanName.toLowerCase().includes('gemini') ||
+          spanName.toLowerCase().includes('google') ||
+          spanName.toLowerCase().includes('vertex')
+        ) {
+          provider = 'gemini';
+        } else {
+          provider = 'unknown';
+        }
+      }
+
+      // Build full API name
+      const operation = String(attrs['gen_ai.operation.name'] ?? '');
+      let apiName: string;
+      if (provider === 'openai') {
+        if (operation === 'chat') {
+          apiName = 'chat.completions.create';
+        } else if (operation === 'embeddings') {
+          apiName = 'embeddings.create';
+        } else {
+          apiName = operation ? `${operation}.create` : spanName;
+        }
+      } else if (['gemini', 'google', 'google_genai'].includes(provider)) {
+        if (operation === 'generate_content' || spanName.toLowerCase().includes('generate')) {
+          apiName = 'models.generate_content';
+        } else {
+          apiName = operation || spanName;
+        }
+      } else {
+        apiName = operation || spanName;
+      }
+
+      // Extract timing (OTel uses high-resolution time in nanoseconds)
+      const startedAt = span.startTime[0] + span.startTime[1] / 1e9;
+      const endedAt = span.endTime[0] + span.endTime[1] / 1e9;
+      const durationMs = (endedAt - startedAt) * 1000;
+
+      // Extract span IDs
+      const spanCtx = span.spanContext();
+      const spanId = spanCtx?.spanId ?? null;
+      const traceId = spanCtx?.traceId ?? null;
+      const parentSpanId = span.parentSpanId ?? null;
+
+      // Build request object
+      const requestModel = attrs['gen_ai.request.model'];
+      const request: Record<string, unknown> = {
+        model: requestModel,
+      };
+
+      // Add request parameters if available
+      if (attrs['gen_ai.request.max_tokens']) {
+        request.max_tokens = attrs['gen_ai.request.max_tokens'];
+      }
+      if (attrs['gen_ai.request.temperature'] !== undefined) {
+        request.temperature = attrs['gen_ai.request.temperature'];
+      }
+      if (attrs['gen_ai.request.top_p'] !== undefined) {
+        request.top_p = attrs['gen_ai.request.top_p'];
+      }
+      if (attrs['gen_ai.request.frequency_penalty'] !== undefined) {
+        request.frequency_penalty = attrs['gen_ai.request.frequency_penalty'];
+      }
+      if (attrs['gen_ai.request.presence_penalty'] !== undefined) {
+        request.presence_penalty = attrs['gen_ai.request.presence_penalty'];
+      }
+
+      // Build response object
+      const response: Record<string, unknown> = {};
+
+      // Response ID
+      const responseId = attrs['gen_ai.response.id'];
+      if (responseId) {
+        response.id = responseId;
+      }
+
+      // Response model
+      const responseModel = attrs['gen_ai.response.model'] ?? requestModel;
+      if (responseModel) {
+        response.model = responseModel;
+      }
+
+      // Finish reasons
+      const finishReasons = attrs['gen_ai.response.finish_reasons'];
+      if (finishReasons) {
+        if (Array.isArray(finishReasons)) {
+          response.finish_reason = finishReasons.length === 1 ? finishReasons[0] : finishReasons;
+        } else {
+          response.finish_reason = String(finishReasons);
+        }
+      }
+
+      // Extract usage metrics
+      const usage: Record<string, unknown> = {};
+      const inputTokens =
+        attrs['gen_ai.usage.input_tokens'] ?? attrs['gen_ai.usage.prompt_tokens'];
+      const outputTokens =
+        attrs['gen_ai.usage.output_tokens'] ?? attrs['gen_ai.usage.completion_tokens'];
+      const totalTokens = attrs['gen_ai.usage.total_tokens'];
+
+      if (inputTokens !== undefined) {
+        usage.prompt_tokens = Number(inputTokens);
+      }
+      if (outputTokens !== undefined) {
+        usage.completion_tokens = Number(outputTokens);
+      }
+      if (totalTokens !== undefined) {
+        usage.total_tokens = Number(totalTokens);
+      } else if (inputTokens !== undefined && outputTokens !== undefined) {
+        usage.total_tokens = Number(inputTokens) + Number(outputTokens);
+      }
+
+      if (Object.keys(usage).length > 0) {
+        response.usage = usage;
+      }
+
+      // Check for errors
+      let error: string | null = null;
+      if (span.status && span.status.code === SpanStatusCode.ERROR) {
+        error = span.status.message ?? 'Unknown error';
+      }
+
+      // Also check for error attributes
+      if (!error) {
+        const errorType = attrs['error.type'];
+        if (errorType) {
+          const errorMsg = attrs['error.message'] ?? '';
+          error = errorMsg ? `${errorType}: ${errorMsg}` : String(errorType);
+        }
+      }
+
+      return {
+        provider,
+        api: apiName,
+        request: request.model || Object.keys(request).length > 1 ? request : null,
+        response: Object.keys(response).length > 0 ? response : null,
+        error,
+        started_at: startedAt,
+        ended_at: endedAt,
+        duration_ms: Math.round(durationMs * 1000) / 1000,
+        callsite: null,
+        span_id: spanId,
+        parent_span_id: parentSpanId,
+        trace_id: traceId,
+      };
+    } catch (e) {
+      logger.debug(`Failed to convert OTel span to event: ${e}`);
+      return null;
+    }
   }
 
   /**
@@ -616,7 +892,7 @@ export class Collector {
       const response = await fetch(url, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
         },
         signal: AbortSignal.timeout(10000),
       });
@@ -628,7 +904,7 @@ export class Collector {
         throw new Error(`Failed to validate API key: HTTP ${response.status}`);
       }
 
-      const result = await response.json() as {
+      const result = (await response.json()) as {
         success?: boolean;
         usage?: UsageInfo;
       };
@@ -674,7 +950,7 @@ export class Collector {
       const response = await fetch(url, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ trace_count: traceCount }),
@@ -686,20 +962,20 @@ export class Collector {
           throw new Error('Invalid API key provided to aiobs');
         }
         if (response.status === 429) {
-          const errorBody = await response.json() as {
+          const errorBody = (await response.json()) as {
             error?: string;
             usage?: UsageInfo;
           };
           throw new Error(
             `Rate limit exceeded: ${errorBody.error ?? 'Unknown error'} ` +
-            `(tier: ${errorBody.usage?.tier ?? 'unknown'}, ` +
-            `used: ${errorBody.usage?.traces_used ?? 0}/${errorBody.usage?.traces_limit ?? 0})`
+              `(tier: ${errorBody.usage?.tier ?? 'unknown'}, ` +
+              `used: ${errorBody.usage?.traces_used ?? 0}/${errorBody.usage?.traces_limit ?? 0})`
           );
         }
         throw new Error(`Failed to record usage: HTTP ${response.status}`);
       }
 
-      const result = await response.json() as {
+      const result = (await response.json()) as {
         success?: boolean;
         usage?: UsageInfo;
       };
@@ -734,7 +1010,7 @@ export class Collector {
       const response = await fetch(url, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(exportData),
@@ -749,7 +1025,7 @@ export class Collector {
         return;
       }
 
-      const result = await response.json() as {
+      const result = (await response.json()) as {
         message?: string;
       };
 

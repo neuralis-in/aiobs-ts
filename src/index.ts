@@ -1,37 +1,40 @@
 /**
  * aiobs - AI Observability SDK for TypeScript
- * 
+ *
+ * This SDK uses OpenTelemetry underneath for trace context propagation
+ * and provider instrumentation, while maintaining a simple API.
+ *
  * Usage (global singleton):
- * 
- *   import { observer, wrapOpenAIClient } from 'aiobs';
+ *
+ *   import { observer } from 'aiobs';
  *   import OpenAI from 'openai';
- *   
- *   const openai = wrapOpenAIClient(new OpenAI(), observer);
- *   
+ *
+ *   const openai = new OpenAI();
+ *
  *   await observer.observe();
- *   // ... make LLM calls ...
+ *   // ... make LLM calls (automatically instrumented via OTel) ...
  *   observer.end();
  *   await observer.flush();
- * 
+ *
  * Function tracing with observe:
- * 
+ *
  *   import { observe } from 'aiobs';
- *   
+ *
  *   const myFunc = observe(function myFunc() { ... });
  *   const myAsyncFunc = observe(async function myAsyncFunc() { ... });
- * 
+ *
  * Gemini support:
- * 
+ *
  *   import { wrapGeminiClient, observer } from 'aiobs';
  *   import { GoogleGenAI } from '@google/genai';
- *   
+ *
  *   const client = wrapGeminiClient(new GoogleGenAI(), observer);
- * 
+ *
  * Export to cloud storage:
- * 
+ *
  *   import { observer } from 'aiobs';
  *   import { GCSExporter } from 'aiobs/exporters';
- *   
+ *
  *   const exporter = new GCSExporter({
  *     bucket: 'my-observability-bucket',
  *     prefix: 'traces/',
@@ -101,6 +104,16 @@ export { CustomExporter, CompositeExporter } from './exporters/custom.js';
 // Export classes and functions
 export { Collector } from './collector.js';
 export { observe, withObserve, setObserver } from './observe.js';
+
+// Tracer utilities (for advanced usage)
+export {
+  initTracer,
+  getTracer,
+  getFinishedSpans,
+  clearSpans,
+  resetTracer,
+  isInitialized,
+} from './tracer.js';
 
 // Provider wrappers
 export { wrapOpenAIClient, wrapEmbeddingsResource } from './providers/openai/index.js';

@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { observe, withObserve, setObserver } from '../src/observe.js';
 import { Collector } from '../src/collector.js';
+import { initTracer, resetTracer } from '../src/tracer.js';
 
 describe('observe()', () => {
   let collector: Collector;
   let recordedEvents: unknown[];
 
   beforeEach(() => {
+    // Initialize OTel tracer for context propagation
+    initTracer();
+
     collector = new Collector();
     recordedEvents = [];
 
@@ -21,6 +25,7 @@ describe('observe()', () => {
 
   afterEach(() => {
     collector.reset();
+    resetTracer();
     vi.restoreAllMocks();
   });
 

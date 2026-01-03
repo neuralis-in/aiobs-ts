@@ -34,6 +34,7 @@ export interface Event {
   callsite: Callsite | null;
   span_id: string | null;
   parent_span_id: string | null;
+  trace_id: string | null; // OTel trace ID for correlation
 }
 
 export interface FunctionEvent {
@@ -51,6 +52,7 @@ export interface FunctionEvent {
   callsite: Callsite | null;
   span_id: string | null;
   parent_span_id: string | null;
+  trace_id: string | null; // OTel trace ID for correlation
   enh_prompt: boolean;
   enh_prompt_id: string | null;
   auto_enhance_after: number | null;
@@ -82,6 +84,7 @@ export interface TraceNode {
   callsite: Callsite | null;
   span_id: string | null;
   parent_span_id: string | null;
+  trace_id?: string | null;
   event_type: 'provider' | 'function';
   enh_prompt?: boolean;
   enh_prompt_id?: string | null;

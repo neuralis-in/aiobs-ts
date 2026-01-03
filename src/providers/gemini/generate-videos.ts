@@ -176,6 +176,7 @@ export function createWrappedGenerateVideos(
         duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
         span_id: spanId,
         parent_span_id: parentSpanId,
+        trace_id: null,
       };
       
       collector.recordEvent(event);

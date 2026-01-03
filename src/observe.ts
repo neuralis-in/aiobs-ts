@@ -1,21 +1,41 @@
 /**
- * @observe decorator for tracing function execution.
- * 
+ * @observe decorator for tracing function execution using OpenTelemetry.
+ *
  * Usage:
  *   // Wrap a function
  *   const myFunc = observe(function myFunc() { ... });
- *   
+ *
  *   // With options
  *   const myFunc = observe(function myFunc() { ... }, { name: 'custom_name' });
- *   
+ *
  *   // Or use the factory pattern
  *   const traced = withObserve({ name: 'myOperation' });
  *   const myFunc = traced(async () => { ... });
  */
 
 import { randomUUID } from 'crypto';
+import { SpanStatusCode, context, trace } from '@opentelemetry/api';
 import type { Collector } from './collector.js';
 import type { FunctionEvent, Callsite } from './models/observability.js';
+import { getTracer, initTracer, isInitialized } from './tracer.js';
+
+/**
+ * Get the current parent span ID from OTel context.
+ */
+function getCurrentParentSpanId(): string | null {
+  try {
+    const currentSpan = trace.getSpan(context.active());
+    if (currentSpan) {
+      const ctx = currentSpan.spanContext();
+      if (ctx && ctx.spanId) {
+        return ctx.spanId;
+      }
+    }
+  } catch {
+    // Ignore errors
+  }
+  return null;
+}
 
 // Reference to the global observer (set via setObserver)
 let globalObserver: Collector | null = null;
@@ -34,14 +54,14 @@ function getCallsite(skipFrames = 2): Callsite | null {
   try {
     const error = new Error();
     const stack = error.stack?.split('\n') ?? [];
-    
+
     for (let i = skipFrames; i < stack.length; i++) {
       const line = stack[i];
       // Skip internal aiobs frames
       if (line.includes('/aiobs-ts/src/') || line.includes('/aiobs-ts/dist/')) {
         continue;
       }
-      
+
       // Parse stack frame
       const match = line.match(/at\s+(?:(.+?)\s+)?\(?(.+?):(\d+):(\d+)\)?/);
       if (match) {
@@ -67,7 +87,7 @@ function safeRepr(obj: unknown, maxLength = 500, depth = 0): unknown {
   if (depth > 3) {
     return '<nested>';
   }
-  
+
   try {
     if (obj === null || obj === undefined) {
       return obj;
@@ -99,7 +119,7 @@ function safeRepr(obj: unknown, maxLength = 500, depth = 0): unknown {
           return `<${constructorName}>`;
         }
       }
-      
+
       // For plain objects, serialize safely
       const entries = Object.entries(obj).slice(0, 20);
       return Object.fromEntries(
@@ -127,7 +147,7 @@ export interface ObserveOptions {
 }
 
 /**
- * Wrap a function with observability tracing.
+ * Wrap a function with observability tracing using OpenTelemetry.
  */
 export function observe<T extends (...args: unknown[]) => unknown>(
   fn: T,
@@ -151,14 +171,18 @@ export function observe<T extends (...args: unknown[]) => unknown>(
         return (fn as (...args: unknown[]) => Promise<unknown>).apply(this, args);
       }
 
-      const spanId = randomUUID();
-      const parentSpanId = observer.getCurrentSpanId();
-      const token = observer.setCurrentSpanId(spanId);
+      // Initialize tracer if not already done
+      if (!isInitialized()) {
+        initTracer();
+      }
 
-      const started = Date.now() / 1000;
+      const tracer = getTracer();
       const callsite = getCallsite(3);
       let errorMsg: string | null = null;
       let result: unknown = null;
+
+      // Get parent span ID BEFORE starting the new span
+      const parentSpanId = getCurrentParentSpanId();
 
       // Capture args if enabled
       let capturedArgs: unknown[] | null = null;
@@ -170,51 +194,65 @@ export function observe<T extends (...args: unknown[]) => unknown>(
         }
       }
 
-      try {
-        result = await (fn as (...args: unknown[]) => Promise<unknown>).apply(this, args);
-        return result;
-      } catch (e) {
-        const err = e as Error;
-        errorMsg = `${err.name}: ${err.message}`;
-        throw e;
-      } finally {
-        const ended = Date.now() / 1000;
+      // Use OTel span for tracing
+      return tracer.startActiveSpan(name, async (span) => {
+        const started = Date.now() / 1000;
 
-        // Capture result if enabled
-        let capturedResult: unknown = null;
-        if (captureResult && errorMsg === null) {
-          try {
-            capturedResult = safeRepr(result);
-          } catch {
-            // Ignore
+        // Get span IDs from OTel (span_id and trace_id from the new span)
+        const ctx = span.spanContext();
+        const spanId = ctx?.spanId ?? randomUUID();
+        const traceId = ctx?.traceId ?? null;
+
+        try {
+          result = await (fn as (...args: unknown[]) => Promise<unknown>).apply(this, args);
+          return result;
+        } catch (e) {
+          const err = e as Error;
+          errorMsg = `${err.name}: ${err.message}`;
+          // Record exception on OTel span
+          span.recordException(err);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+          throw e;
+        } finally {
+          const ended = Date.now() / 1000;
+          span.end();
+
+          // Capture result if enabled
+          let capturedResult: unknown = null;
+          if (captureResult && errorMsg === null) {
+            try {
+              capturedResult = safeRepr(result);
+            } catch {
+              // Ignore
+            }
           }
+
+          const enhPromptId = enhPrompt ? randomUUID() : null;
+
+          const event: FunctionEvent = {
+            provider: 'function',
+            api: name,
+            name,
+            module: null,
+            args: capturedArgs,
+            kwargs: null,
+            result: capturedResult,
+            error: errorMsg,
+            started_at: started,
+            ended_at: ended,
+            duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
+            callsite,
+            span_id: spanId,
+            parent_span_id: parentSpanId,
+            trace_id: traceId,
+            enh_prompt: enhPrompt,
+            enh_prompt_id: enhPromptId,
+            auto_enhance_after: autoEnhanceAfter ?? null,
+          };
+
+          observer.recordEvent(event);
         }
-
-        const enhPromptId = enhPrompt ? randomUUID() : null;
-
-        const event: FunctionEvent = {
-          provider: 'function',
-          api: name,
-          name,
-          module: null,
-          args: capturedArgs,
-          kwargs: null,
-          result: capturedResult,
-          error: errorMsg,
-          started_at: started,
-          ended_at: ended,
-          duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
-          callsite,
-          span_id: spanId,
-          parent_span_id: parentSpanId,
-          enh_prompt: enhPrompt,
-          enh_prompt_id: enhPromptId,
-          auto_enhance_after: autoEnhanceAfter ?? null,
-        };
-
-        observer.recordEvent(event);
-        observer.setCurrentSpanId(token);
-      }
+      });
     };
 
     Object.defineProperty(asyncWrapper, 'name', { value: name });
@@ -226,14 +264,16 @@ export function observe<T extends (...args: unknown[]) => unknown>(
         return fn.apply(this, args);
       }
 
-      const spanId = randomUUID();
-      const parentSpanId = observer.getCurrentSpanId();
-      const token = observer.setCurrentSpanId(spanId);
+      // Initialize tracer if not already done
+      if (!isInitialized()) {
+        initTracer();
+      }
 
-      const started = Date.now() / 1000;
+      const tracer = getTracer();
       const callsite = getCallsite(3);
-      let errorMsg: string | null = null;
-      let result: unknown = null;
+
+      // Get parent span ID BEFORE starting the new span
+      const parentSpanId = getCurrentParentSpanId();
 
       // Capture args if enabled
       let capturedArgs: unknown[] | null = null;
@@ -245,51 +285,68 @@ export function observe<T extends (...args: unknown[]) => unknown>(
         }
       }
 
-      try {
-        result = fn.apply(this, args);
-        return result;
-      } catch (e) {
-        const err = e as Error;
-        errorMsg = `${err.name}: ${err.message}`;
-        throw e;
-      } finally {
-        const ended = Date.now() / 1000;
+      // Use OTel span for tracing with context propagation
+      return tracer.startActiveSpan(name, (span) => {
+        const started = Date.now() / 1000;
 
-        // Capture result if enabled
-        let capturedResult: unknown = null;
-        if (captureResult && errorMsg === null) {
-          try {
-            capturedResult = safeRepr(result);
-          } catch {
-            // Ignore
+        // Get span IDs from OTel (span_id and trace_id from the new span)
+        const ctx = span.spanContext();
+        const spanId = ctx?.spanId ?? randomUUID();
+        const traceId = ctx?.traceId ?? null;
+
+        let errorMsg: string | null = null;
+        let result: unknown = null;
+
+        try {
+          result = fn.apply(this, args);
+          return result;
+        } catch (e) {
+          const err = e as Error;
+          errorMsg = `${err.name}: ${err.message}`;
+          // Record exception on OTel span
+          span.recordException(err);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+          throw e;
+        } finally {
+          const ended = Date.now() / 1000;
+          span.end();
+
+          // Capture result if enabled
+          let capturedResult: unknown = null;
+          if (captureResult && errorMsg === null) {
+            try {
+              capturedResult = safeRepr(result);
+            } catch {
+              // Ignore
+            }
           }
+
+          const enhPromptId = enhPrompt ? randomUUID() : null;
+
+          const event: FunctionEvent = {
+            provider: 'function',
+            api: name,
+            name,
+            module: null,
+            args: capturedArgs,
+            kwargs: null,
+            result: capturedResult,
+            error: errorMsg,
+            started_at: started,
+            ended_at: ended,
+            duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
+            callsite,
+            span_id: spanId,
+            parent_span_id: parentSpanId,
+            trace_id: traceId,
+            enh_prompt: enhPrompt,
+            enh_prompt_id: enhPromptId,
+            auto_enhance_after: autoEnhanceAfter ?? null,
+          };
+
+          observer.recordEvent(event);
         }
-
-        const enhPromptId = enhPrompt ? randomUUID() : null;
-
-        const event: FunctionEvent = {
-          provider: 'function',
-          api: name,
-          name,
-          module: null,
-          args: capturedArgs,
-          kwargs: null,
-          result: capturedResult,
-          error: errorMsg,
-          started_at: started,
-          ended_at: ended,
-          duration_ms: Math.round((ended - started) * 1000 * 1000) / 1000,
-          callsite,
-          span_id: spanId,
-          parent_span_id: parentSpanId,
-          enh_prompt: enhPrompt,
-          enh_prompt_id: enhPromptId,
-          auto_enhance_after: autoEnhanceAfter ?? null,
-        };
-
-        observer.recordEvent(event);
-        observer.setCurrentSpanId(token);
-      }
+      });
     };
 
     Object.defineProperty(syncWrapper, 'name', { value: name });
@@ -299,7 +356,7 @@ export function observe<T extends (...args: unknown[]) => unknown>(
 
 /**
  * Factory function to create a tracing wrapper with options.
- * 
+ *
  * Usage:
  *   const traced = withObserve({ name: 'myOperation' });
  *   const myFunc = traced(async (x: number) => x * 2);
@@ -307,4 +364,3 @@ export function observe<T extends (...args: unknown[]) => unknown>(
 export function withObserve(options: ObserveOptions = {}) {
   return <T extends (...args: unknown[]) => unknown>(fn: T): T => observe(fn, options);
 }
-
