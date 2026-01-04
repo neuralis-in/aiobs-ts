@@ -31,11 +31,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/neuralis/aiobs-ts.git"
+    "url": "git+https://github.com/neuralis-in/aiobs-ts.git"
   },
-  "homepage": "https://github.com/neuralis/aiobs-ts#readme",
+  "homepage": "https://github.com/neuralis-in/aiobs-ts#readme",
   "bugs": {
-    "url": "https://github.com/neuralis/aiobs-ts/issues"
+    "url": "https://github.com/neuralis-in/aiobs-ts/issues"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",

@@ -230,9 +230,9 @@ Traces are written as JSON with the following structure:
 ## Links
 
 - 📦 [npm package](https://www.npmjs.com/package/aiobs)
-- 🐙 [GitHub repository](https://github.com/neuralis/aiobs-ts)
-- 📝 [Changelog](https://github.com/neuralis/aiobs-ts/releases)
+- 🐙 [GitHub repository](https://github.com/neuralis-in/aiobs-ts)
+- 📝 [Changelog](https://github.com/neuralis-in/aiobs-ts/releases)
 
 ## License
 
-MIT © [Neuralis](https://github.com/neuralis)
+MIT © [Neuralis](https://github.com/neuralis-in)
