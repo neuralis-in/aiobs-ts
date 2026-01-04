@@ -1,13 +1,20 @@
 name: Publish to npm
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (must match package.json)'
+        required: true
+        type: string
 
 jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
+    
+    # Restrict to protected environment (requires admin approval)
+    environment: npm-publish
 
     permissions:
       contents: read
@@ -16,6 +23,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Verify version matches
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PACKAGE_VERSION" != "${{ inputs.version }}" ]; then
+            echo "❌ Version mismatch!"
+            echo "   Input version: ${{ inputs.version }}"
+            echo "   package.json:  $PACKAGE_VERSION"
+            exit 1
+          fi
+          echo "✅ Version verified: $PACKAGE_VERSION"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -38,3 +56,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Summary
+        run: |
+          echo "## 🚀 Published to npm" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** [aiobs](https://www.npmjs.com/package/aiobs)" >> $GITHUB_STEP_SUMMARY
