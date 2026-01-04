@@ -1,11 +1,23 @@
 # aiobs
 
+[![npm version](https://img.shields.io/npm/v/aiobs.svg)](https://www.npmjs.com/package/aiobs)
+[![npm downloads](https://img.shields.io/npm/dm/aiobs.svg)](https://www.npmjs.com/package/aiobs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 AI Observability SDK for TypeScript - trace and monitor LLM calls.
 
 ## Installation
 
 ```bash
 npm install aiobs
+```
+
+```bash
+yarn add aiobs
+```
+
+```bash
+pnpm add aiobs
 ```
 
 ## Quick Start
@@ -215,6 +227,12 @@ Traces are written as JSON with the following structure:
 }
 ```
 
+## Links
+
+- 📦 [npm package](https://www.npmjs.com/package/aiobs)
+- 🐙 [GitHub repository](https://github.com/neuralis/aiobs-ts)
+- 📝 [Changelog](https://github.com/neuralis/aiobs-ts/releases)
+
 ## License
 
-MIT
+MIT © [Neuralis](https://github.com/neuralis)

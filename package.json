@@ -19,10 +19,24 @@
     "tracing",
     "openai",
     "opentelemetry",
-    "monitoring"
+    "monitoring",
+    "gemini",
+    "gpt",
+    "langchain",
+    "telemetry",
+    "instrumentation",
+    "typescript"
   ],
-  "author": "",
+  "author": "Neuralis",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neuralis/aiobs-ts.git"
+  },
+  "homepage": "https://github.com/neuralis/aiobs-ts#readme",
+  "bugs": {
+    "url": "https://github.com/neuralis/aiobs-ts/issues"
+  },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^1.30.0",
